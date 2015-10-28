@@ -24,7 +24,7 @@
 struct grep_line {
 	const char *file;
 	unsigned long lineno;
-	char text[1];
+	struct box box;
 };
 
 struct grep_state {
@@ -58,7 +58,7 @@ grep_get_column_data(struct view *view, const struct line *line, struct view_col
 		return true;
 	}
 
-	if (*grep->file && !*grep->text) {
+	if (*grep->file && !grep->box.text) {
 		static struct view_column file_name_column;
 
 		file_name_column.type = VIEW_COLUMN_FILE_NAME;
@@ -69,7 +69,9 @@ grep_get_column_data(struct view *view, const struct line *line, struct view_col
 
 	column_data->line_number = &grep->lineno;
 	column_data->file_name = grep->file;
-	column_data->text = grep->text;
+	struct box *box = &grep->box;
+	column_data->box = box;
+	column_data->text = box->text;
 	return true;
 }
 
@@ -163,7 +165,7 @@ grep_request(struct view *view, enum request request, struct line *line)
 			return REQ_NONE;
 		if (file_view->parent == view && file_view->prev == view &&
 		    state->last_file == grep->file && view_is_displayed(file_view)) {
-			if (*grep->text) {
+			if (grep->box.text) {
 				select_view_line(file_view, grep->lineno);
 				update_view_title(file_view);
 			}
@@ -239,7 +241,8 @@ grep_read(struct view *view, struct buffer *buf)
 	    !add_line_text(view, file, LINE_FILE))
 		return false;
 
-	line = add_line_alloc(view, &grep, LINE_DEFAULT, textlen, false);
+	size_t cells = 3;
+	line = add_line_alloc(view, &grep, LINE_DEFAULT, box_sizeof(NULL, cells, textlen), false);
 	if (!line)
 		return false;
 
@@ -247,8 +250,26 @@ grep_read(struct view *view, struct buffer *buf)
 	grep->lineno = atoi(lineno);
 	if (grep->lineno > 0)
 		grep->lineno -= 1;
-	strncpy(grep->text, text, textlen);
-	grep->text[textlen] = 0;
+	struct box *box = &grep->box;
+	const char *hilite = grep_argv[0];
+	regex_t hi_reg;
+	regmatch_t hi_match;
+	regcomp(&hi_reg, hilite, 0);
+	if (!regexec(&hi_reg, text, 1, &hi_match, 0)) {
+		box->cell[0].length = hi_match.rm_so;
+		box->cell[1].length = hi_match.rm_eo - hi_match.rm_so;
+		box->cell[2].length = textlen - hi_match.rm_eo;
+		box->cell[0].type = LINE_DEFAULT;
+		box->cell[1].type = LINE_DIFF_CHUNK;
+		box->cell[2].type = LINE_DEFAULT;
+		box->cells = 3;
+	} else {
+		box->cell[0].length = textlen;
+		box->cell[0].type = LINE_DEFAULT;
+		box->cells = 1;
+	}
+	regfree(&hi_reg);
+	box_text_copy(box, cells, text, textlen);
 	view_column_info_update(view, line);
 
 	state->last_file = file;
